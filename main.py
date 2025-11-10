@@ -1,0 +1,101 @@
+import asyncio
+from fastapi import FastAPI
+import redis.asyncio as redis
+from aiormq import connect, Connection
+from aiormq.exceptions import AMQPConnectionError
+
+from config import get_redis_url, RABBITMQ_URL, PUSH_QUEUE
+from api.endpoints import router as api_router, set_global_clients
+from core.worker import process_push_event, set_redis_client
+
+# --- State and Client Holders ---
+rabbit_connection: Connection | None = None
+redis_client: redis.Redis | None = None
+
+app = FastAPI(
+    title="Push Service (Service D)",
+    description="Asynchronous worker for mobile notification delivery and token management."
+)
+
+# --- Connection Handlers ---
+
+async def init_redis():
+    """Initializes the Redis client."""
+    redis_url = get_redis_url()
+    if not redis_url:
+        print("🔴 Redis URL configuration is missing.")
+        return
+
+    global redis_client
+    try:
+        # Use decode_responses=True for easy string handling
+        redis_client = redis.from_url(redis_url, decode_responses=True)
+        # Attempt a simple ping to verify connection
+        await redis_client.ping()
+        print("🟢 Redis connection established successfully.")
+    except Exception as e:
+        print(f"🔴 ERROR connecting to Redis: {e}")
+        redis_client = None
+
+async def init_rabbitmq_consumer():
+    """Initializes and starts the non-blocking RabbitMQ consumer."""
+    if not RABBITMQ_URL:
+        print("🔴 RABBITMQ_URL is not set. Consumer will not start.")
+        return
+
+    global rabbit_connection
+    try:
+        rabbit_connection = await connect(RABBITMQ_URL)
+        channel = await rabbit_connection.channel()
+        
+        # Set QoS: prefetch_count=1 ensures the worker only takes one message at a time
+        await channel.basic_qos(prefetch_count=1)
+        
+        # Start consuming from the push.queue
+        await channel.basic_consume(PUSH_QUEUE, process_push_event, no_ack=False)
+        
+        print(f"🟢 RabbitMQ Consumer started successfully on queue: {PUSH_QUEUE}")
+        
+    except AMQPConnectionError as e:
+        print(f"🔴 ERROR connecting to RabbitMQ: {e}. Retrying consumer initialization in 10s...")
+        await asyncio.sleep(10)
+        await init_rabbitmq_consumer() # Retry connection
+    except Exception as e:
+        print(f"🔴 Unhandled ERROR during RabbitMQ setup: {e}")
+
+# --- FastAPI Lifecycle Hooks ---
+
+@app.on_event("startup")
+async def startup_event():
+    """FastAPI event hook to start connections and the consumer."""
+    await init_redis()
+    
+    # Inject clients into other modules
+    if redis_client:
+        set_redis_client(redis_client)
+        
+    # Start the async consumer logic in a background task
+    asyncio.create_task(init_rabbitmq_consumer())
+
+    # Inject client handlers into the API router for health checks
+    set_global_clients(redis_client, rabbit_connection)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """FastAPI event hook to close connections."""
+    if rabbit_connection:
+        await rabbit_connection.close()
+    if redis_client:
+        await redis_client.close()
+    print("🔴 Shut down connections complete.")
+
+# --- Register Endpoints ---
+app.include_router(api_router)
+
+# --- Execution Entry Point ---
+if __name__ == "__main__":
+    import uvicorn
+    # Make sure to create the .env file with your credentials before running
+    print("Starting FastAPI server...")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
