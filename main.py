@@ -80,7 +80,7 @@ async def monitor_rabbitmq_connection():
     """Monitor RabbitMQ connection and attempt to keep it alive by periodic checks."""
     while True:
         try:
-            await asyncio.sleep(30)  # Check every 30 seconds
+            await asyncio.sleep(15)  # Check every 15 seconds (more frequent)
             
             if rabbit_connection and not rabbit_connection.is_closed:
                 # Perform a lightweight operation to keep connection alive
@@ -92,6 +92,10 @@ async def monitor_rabbitmq_connection():
                     # Don't print anything to avoid spam, just silently keep alive
                 except Exception as e:
                     print(f"⚠️ RabbitMQ keepalive check failed: {e}")
+                    rabbit_connection = None
+        except asyncio.CancelledError:
+            print("RabbitMQ monitor task cancelled")
+            break
         except Exception as e:
             print(f"⚠️ Error in RabbitMQ monitor task: {e}")
             await asyncio.sleep(5)
