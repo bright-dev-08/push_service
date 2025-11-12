@@ -21,17 +21,31 @@ def set_global_clients(r_client: Redis, r_conn: Connection):
 @router.get("/health", response_model=HealthStatus)
 async def get_health():
     """Provides the current health and connection status of the service."""
-    rabbit_status = rabbit_connection is not None and not rabbit_connection.is_closed
-    redis_status = False
+    # Check RabbitMQ connection
+    rabbit_status = False
+    if rabbit_connection is not None:
+        try:
+            # Test if connection is alive by checking if it's not closed
+            rabbit_status = not rabbit_connection.is_closed
+        except Exception:
+            rabbit_status = False
     
-    try:
-        if redis_client:
+    # Check Redis connection
+    redis_status = False
+    if redis_client:
+        try:
             # Ping Redis to confirm connection health
             redis_status = await redis_client.ping()
-    except Exception:
-        redis_status = False
+        except Exception:
+            redis_status = False
 
-    overall_status = "OK" if rabbit_status and redis_status else "DEGRADED"
+    # Overall status: OK if both connected, DEGRADED if one is down, UNHEALTHY if none are up
+    if rabbit_status and redis_status:
+        overall_status = "OK"
+    elif rabbit_status or redis_status:
+        overall_status = "DEGRADED"
+    else:
+        overall_status = "INITIALIZING"  # Both disconnected - service may still be starting up
     
     return HealthStatus(
         status=overall_status,
