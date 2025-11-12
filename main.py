@@ -110,17 +110,9 @@ async def monitor_rabbitmq_connection():
                 # This prevents server-side idle timeouts
                 try:
                     channel = await rabbit_connection.channel()
-                    # Declare the queue passively (just check it exists).
-                    # The returned frame contains message_count and consumer_count
-                    # which we log to help verify that a consumer is attached.
-                    q_frame = await channel.queue_declare(PUSH_QUEUE, passive=True)
-                    try:
-                        msg_count = getattr(q_frame, 'message_count', None)
-                        cons_count = getattr(q_frame, 'consumer_count', None)
-                        print(f"📊 Queue '{PUSH_QUEUE}' stats - messages: {msg_count}, consumers: {cons_count}")
-                    except Exception:
-                        # If the frame shape is unexpected, ignore and continue
-                        pass
+                    # Declare the queue passively (just check it exists)
+                    await channel.queue_declare(PUSH_QUEUE, passive=True)
+                    # Don't print anything to avoid spam, just silently keep alive
                 except Exception as e:
                     print(f"⚠️ RabbitMQ keepalive check failed: {e}")
                     rabbit_connection = None
@@ -152,11 +144,7 @@ async def startup_event():
     
     # Inject clients into other modules
     if redis_client:
-        # Make Redis available to API endpoints immediately so health checks
-        # and token registration work even while RabbitMQ is still connecting.
-        from api.endpoints import set_redis_client as api_set_redis
         set_redis_client(redis_client)
-        api_set_redis(redis_client)
     if fcm_provider:
         set_fcm_provider(fcm_provider)
         
