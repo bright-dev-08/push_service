@@ -48,9 +48,9 @@ async def init_rabbitmq_consumer():
 
     global rabbit_connection
     try:
-        # Use connection_attempts and heartbeat to maintain stable connection
-        # heartbeat=60 sends keepalive every 60 seconds to prevent idle disconnection
-        rabbit_connection = await connect(RABBITMQ_URL, connection_attempts=3, heartbeat=60)
+        # Connect to RabbitMQ with default parameters
+        # The retry loop below will handle reconnection on failure
+        rabbit_connection = await connect(RABBITMQ_URL)
         channel = await rabbit_connection.channel()
         
         # Set QoS: prefetch_count=1 ensures the worker only takes one message at a time
@@ -66,10 +66,12 @@ async def init_rabbitmq_consumer():
         
     except AMQPConnectionError as e:
         print(f"🔴 ERROR connecting to RabbitMQ: {e}. Retrying consumer initialization in 10s...")
+        rabbit_connection = None
         await asyncio.sleep(10)
         await init_rabbitmq_consumer() # Retry connection
     except Exception as e:
         print(f"🔴 Unhandled ERROR during RabbitMQ setup: {e}")
+        rabbit_connection = None
 
 # --- FastAPI Lifecycle Hooks ---
 
