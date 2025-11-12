@@ -1,3 +1,4 @@
+import os
 import asyncio
 from fastapi import FastAPI
 import redis.asyncio as redis
@@ -6,11 +7,13 @@ from aiormq.exceptions import AMQPConnectionError
 
 from config import get_redis_url, RABBITMQ_URL, PUSH_QUEUE
 from api.endpoints import router as api_router, set_global_clients
-from core.worker import process_push_event, set_redis_client
+from core.worker import process_push_event, set_redis_client, set_fcm_provider
+from core.providers.fcm import FCMProvider
 
 # --- State and Client Holders ---
 rabbit_connection: Connection | None = None
 redis_client: redis.Redis | None = None
+fcm_provider: FCMProvider | None = None
 
 app = FastAPI(
     title="Push Service (Service D)",
@@ -65,14 +68,28 @@ async def init_rabbitmq_consumer():
 
 # --- FastAPI Lifecycle Hooks ---
 
+async def init_fcm():
+    """Initialize Firebase Cloud Messaging provider."""
+    global fcm_provider
+    
+    try:
+        fcm_provider = FCMProvider()
+        print("🟢 FCM provider initialized successfully.")
+    except Exception as e:
+        print(f"🔴 ERROR initializing FCM provider: {e}")
+        fcm_provider = None
+
 @app.on_event("startup")
 async def startup_event():
     """FastAPI event hook to start connections and the consumer."""
     await init_redis()
+    await init_fcm()
     
     # Inject clients into other modules
     if redis_client:
         set_redis_client(redis_client)
+    if fcm_provider:
+        set_fcm_provider(fcm_provider)
         
     # Start the async consumer logic in a background task
     asyncio.create_task(init_rabbitmq_consumer())

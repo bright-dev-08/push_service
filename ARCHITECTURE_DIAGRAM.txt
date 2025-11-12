@@ -1,0 +1,172 @@
+PUSH SERVICE ARCHITECTURE — TEMPLATE INTEGRATION DIAGRAM
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  API GATEWAY                                                                │
+│  ├─ Receives notification request                                          │
+│  ├─ Validates & authenticates                                              │
+│  └─ Publishes event to RabbitMQ / push.queue                               │
+│      │                                                                      │
+│      │ Event JSON (snake_case):                                            │
+│      │ {                                                                   │
+│      │   "event_id": "evt-123",                                            │
+│      │   "user_id": 42,                                                    │
+│      │   "template_code": "welcome_v1" OR "payload": {...}                 │
+│      │ }                                                                   │
+│      │                                                                      │
+│      ▼                                                                      │
+│  ┌──────────────────┐                                                       │
+│  │  RABBITMQ QUEUE  │                                                       │
+│  │  push.queue      │  ◄──────────────────────────────────────────┐        │
+│  └──────────────────┘                                            │        │
+│      │                                                            │        │
+│      │ async dequeue                                             │        │
+│      ▼                                                            │        │
+│  ┌─────────────────────────────────────────────────────────┐    │        │
+│  │           PUSH SERVICE WORKER                           │    │        │
+│  │  (core/worker.py - process_push_event)                 │    │        │
+│  │                                                         │    │        │
+│  │  1. Parse & validate event                             │    │        │
+│  │  2. ✅ Idempotency check (Redis key)                   │    │        │
+│  │  3. ✅ Fetch device token (User Service or Redis)      │    │        │
+│  │  4. ✅ Rate limit check (Redis counter)                │    │        │
+│  │  5. ✅ Circuit breaker check (FCM provider)            │    │        │
+│  │  6. 🆕 RESOLVE PAYLOAD:                                │    │        │
+│  │     ├─ If event.payload: use directly                  │    │        │
+│  │     └─ If event.template_code:                         │    │        │
+│  │        ├─ Call Template Service                         │    │        │
+│  │        ├─ Render with variables                         │    │        │
+│  │        └─ Return resolved payload                       │    │        │
+│  │  7. Send to FCM (Firebase Cloud Messaging)             │    │        │
+│  │  8. Handle success/retry/DLQ                           │    │        │
+│  │  9. Ack/Nack message to RabbitMQ                       │    │        │
+│  └─────────────────────────────────────────────────────────┘    │        │
+│      │                                                            │        │
+│      ├─ If template_code → fetch template:                       │        │
+│      │                                                            │        │
+│      │ GET /templates/{template_code}?language=en                │        │
+│      │                                                            │        │
+│      ▼ HTTP Request                                              │        │
+│  ┌──────────────────────────────────────────────────────────┐   │        │
+│  │        TEMPLATE SERVICE                                 │   │        │
+│  │  (Separate microservice - not in push_service repo)     │   │        │
+│  │                                                          │   │        │
+│  │  GET /templates/{template_code}                         │   │        │
+│  │  Response:                                              │   │        │
+│  │  {                                                      │   │        │
+│  │    "template_id": "welcome_v1",                         │   │        │
+│  │    "content": {                                         │   │        │
+│  │      "title": "Welcome, {{name}}!",                     │   │        │
+│  │      "body": "Thanks for joining {{platform}}.",        │   │        │
+│  │      "data": {"link": "{{link}}"}                       │   │        │
+│  │    },                                                   │   │        │
+│  │    "language": "en",                                    │   │        │
+│  │    "version": 1                                         │   │        │
+│  │  }                                                      │   │        │
+│  │                                                          │   │        │
+│  │  Storage: PostgreSQL + Redis cache                      │   │        │
+│  └──────────────────────────────────────────────────────────┘   │        │
+│      │ HTTP Response                                             │        │
+│      │ (template content)                                        │        │
+│      │                                                            │        │
+│      ◄─────────────────────────────────────────────────────────┘        │
+│      │                                                            │        │
+│      │ core/template_resolver.py:                               │        │
+│      │ ├─ Fetch template from Template Service                  │        │
+│      │ ├─ Render: {{name}}→Alice, {{platform}}→iOS, etc.       │        │
+│      │ └─ Return resolved payload:                              │        │
+│      │    {title: "Welcome, Alice!", body: "...", data: {...}} │        │
+│      │                                                            │        │
+│      ▼                                                            │        │
+│  ┌──────────────────────────────────────────────────────────┐   │        │
+│  │        FCM (Firebase Cloud Messaging)                   │   │        │
+│  │  (Google push provider - external service)              │   │        │
+│  │                                                          │   │        │
+│  │  Send notification with:                                │   │        │
+│  │  - token: "FCM_TOKEN_xyz" (device token)               │   │        │
+│  │  - title: "Welcome, Alice!"                             │   │        │
+│  │  - body: "Thanks for joining iOS."                      │   │        │
+│  │  - data: {"link": "https://..."}                        │   │        │
+│  │                                                          │   │        │
+│  │  Response: Message ID or error                          │   │        │
+│  └──────────────────────────────────────────────────────────┘   │        │
+│      │                                                            │        │
+│      │ success?                                                   │        │
+│      ├─ Yes ──► ✅ Log success, ack message                     │        │
+│      └─ No ───► Retry with exponential backoff                  │        │
+│                 If max retries exceeded → move to failed.queue   │        │
+│                                                                  │        │
+│  ┌──────────────────┐                                            │        │
+│  │  REDIS CACHE     │  ◄────────────────────────────────────────┼────────┘
+│  │  ├─ Idempotency  │  (Idempotency keys, rate limits,
+│  │  ├─ Rate limits  │   circuit state, token cache)
+│  │  ├─ Circuit      │
+│  │  └─ Tokens       │
+│  └──────────────────┘
+│
+└─────────────────────────────────────────────────────────────────────────────┘
+
+MESSAGE FLOW (Template Code Path):
+
+  Event: {event_id, user_id, template_code: "welcome_v1", variables: {...}}
+         │
+         ├─ 1. Idempotency: Set "push:event:{event_id}" in Redis (NX=true)
+         │
+         ├─ 2. Token lookup: Get "push:token:user:{user_id}" from Redis
+         │
+         ├─ 3. Rate limit: Increment "push:rate:{user_id}" counter
+         │
+         ├─ 4. Circuit check: Check "circuit:fcm:open_until" in Redis
+         │     If open: schedule retry, ack, return
+         │
+         ├─ 5. RESOLVE: Call Template Service HTTP
+         │     GET /templates/welcome_v1
+         │     Response: {content: {title: "Hello, {{name}}!", ...}}
+         │
+         ├─ 6. RENDER: Substitute variables
+         │     {title: "Hello, Alice!", ...}
+         │
+         ├─ 7. SEND: Call FCM with rendered payload
+         │
+         ├─ 8. If success:
+         │     └─ Reset circuit counter
+         │     └─ Ack message
+         │
+         └─ 9. If failure:
+              ├─ Increment circuit failure counter
+              ├─ If failures >= 5 → open circuit
+              ├─ Schedule retry (exponential backoff)
+              ├─ If retries >= 3 → move to failed.queue
+              └─ Ack original message
+
+---
+
+KEY IMPROVEMENTS:
+
+✅ Flexibility: Template Service team can manage templates independently
+✅ Reusability: Same template used for multiple notification requests
+✅ Multi-language: Templates translated, Push Service requests correct language
+✅ Decoupling: API Gateway doesn't need to know template details
+✅ Performance: Inline payloads bypass Template Service for fast path
+✅ Resilience: Circuit breaker, retries, DLQ for failed messages
+
+---
+
+INTEGRATION CHECKLIST:
+
+For API Gateway to use template path:
+  □ Decide: inline payload OR template_code for each notification type
+  □ Publish events with template_code + variables to push.queue
+  □ Variables must match template placeholders
+
+For Template Service to support Push Service:
+  □ Implement GET /templates/{template_code}?language=en endpoint
+  □ Store templates with language variants
+  □ Return content with {{placeholder}} format
+  □ Add response caching (Redis TTL 1+ hour)
+
+For Push Service (You):
+  □ Set TEMPLATE_SERVICE_URL env var (default: http://template_service:8002)
+  □ Run tests: pytest test_template_resolver.py
+  □ Monitor template resolution time in logs
+  □ Add Prometheus metrics (optional)

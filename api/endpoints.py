@@ -41,9 +41,13 @@ async def get_health():
     )
 
 @router.post("/push/validate_token", response_model=TokenValidation)
-async def validate_token(token: str):
+async def validate_token(token: str, user_id: int | None = None):
     """
     Validates a push token and updates its metadata in Redis.
+
+    If `user_id` is provided the endpoint also stores a mapping from
+    `push:token:user:{user_id}` -> { token: <token> } so the Push worker
+    can look up a user's device token by user_id.
     """
     if not redis_client:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Redis connection failed.")
@@ -58,9 +62,14 @@ async def validate_token(token: str):
         "last_validated": datetime.now().isoformat()
     }
     
-    # Store token metadata
+    # Store token metadata keyed by token
     await redis_client.hmset(token_key, token_metadata)
-    
+
+    # If caller provided a user_id, also store reverse mapping so worker can fetch token by user
+    if user_id is not None:
+        user_key = TOKEN_METADATA_PREFIX + f"user:{user_id}"
+        await redis_client.hset(user_key, "token", token)
+
     return TokenValidation(
         token=token,
         is_valid=is_valid,

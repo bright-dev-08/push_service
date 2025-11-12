@@ -15,10 +15,16 @@ UPSTASH_REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 # RabbitMQ Contract Details
 PUSH_QUEUE = "push.queue"
 
+# Dead Letter Queue for failed notifications
+FAILED_QUEUE = "failed.queue"
+
 # Redis Keys Prefixes
 IDEMPOTENCY_KEY_PREFIX = "push:event:"
 RATE_LIMIT_PREFIX = "push:rate:"
 TOKEN_METADATA_PREFIX = "push:token:"
+
+# FCM Configuration
+# GOOGLE_APPLICATION_CREDENTIALS should be set in .env pointing to your service account JSON file
 
 # Redis connection string for async redis client
 def get_redis_url():

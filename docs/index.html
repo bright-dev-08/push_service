@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Push Service Documentation</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; color: #222; }
+    header { border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 20px; }
+    h1 { color: #2b6cb0; }
+    section { margin-bottom: 20px; }
+    pre { background: #f7fafc; padding: 10px; border-radius: 6px; overflow-x: auto; }
+    code { font-family: monospace; }
+    .ok { color: green; }
+    .warn { color: #d97706; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Push Service Documentation</h1>
+    <p>Author: Bee Jay — Generated: November 12, 2025</p>
+  </header>
+
+  <section>
+    <h2>Overview</h2>
+    <p>The Push Service listens to RabbitMQ <code>push.queue</code>, resolves notification payloads (either via the Template Service or inline payloads), and dispatches push notifications via Firebase Cloud Messaging (FCM). The service implements idempotency, retries with exponential backoff, a dead-letter queue, a Redis-backed circuit breaker, and per-user rate limiting.</p>
+  </section>
+
+  <section>
+    <h2>Quick Start</h2>
+    <ol>
+      <li>Install dependencies: <pre><code>pip install -r requirements.txt</code></pre></li>
+      <li>Set environment variables (see <code>README.md</code> for details).</li>
+      <li>Start service: <pre><code>python main.py</code></pre></li>
+      <li>Publish test message: <pre><code>python scripts/publish_push_event.py --event-id 1 --user-id user_123 --template-code WELCOME --message-data '{"user":{"name":"Test"},"app_name":"Demo"}'</code></pre></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Architecture</h2>
+    <p>Core components:</p>
+    <ul>
+      <li><strong>FastAPI app</strong> — API & lifecycle hooks (main.py)</li>
+      <li><strong>Worker</strong> — RabbitMQ consumer and processing logic (core/worker.py)</li>
+      <li><strong>Template Resolver</strong> — Template Service integration (core/template_resolver.py)</li>
+      <li><strong>FCM Provider</strong> — Firebase messaging wrapper (core/providers/fcm.py)</li>
+      <li><strong>Redis</strong> — Idempotency, rate-limiting, circuit state (Upstash supported)</li>
+      <li><strong>RabbitMQ</strong> — Message broker (push.queue, failed.queue)</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Message Format</h2>
+    <pre><code>{
+  "event_id": "unique-event-id",
+  "type": "push",
+  "user_id": "user_123",
+  "template_code": "WELCOME",
+  "message_data": {"user": {"name": "John"}, "app_name": "MyApp"},
+  "payload": {"title": "...", "body": "...", "data": {...}},
+  "_retry_count": 0
+}
+</code></pre>
+  </section>
+
+  <section>
+    <h2>Resilience Patterns</h2>
+    <ul>
+      <li><strong>Idempotency</strong>: Redis key <code>push:event:{event_id}</code> with TTL (24h).</li>
+      <li><strong>Retries</strong>: Exponential backoff using `_retry_count` in message.</li>
+      <li><strong>DLQ</strong>: Failed messages moved to <code>failed.queue</code> after max retries.</li>
+      <li><strong>Circuit Breaker</strong>: Redis keys <code>circuit:fcm:failures</code> and <code>circuit:fcm:open_until</code>.</li>
+      <li><strong>Rate Limiting</strong>: Per-user key <code>push:rate:{user_id}</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Environment Variables</h2>
+    <pre><code>RABBITMQ_URL
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+TEMPLATE_SERVICE_URL (optional)
+INTERNAL_API_SECRET (optional)
+FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS
+PUSH_QUEUE (default: push.queue)
+FAILED_QUEUE (default: failed.queue)
+</code></pre>
+  </section>
+
+  <section>
+    <h2>Testing & Validation</h2>
+    <ul>
+      <li><code>scripts/validate_deployment.py</code> — Pre-deployment checks</li>
+      <li><code>scripts/pre_push_validator.py</code> — One-command validator</li>
+      <li><code>scripts/integration_test_remote.py</code> — Smoke test against remote services</li>
+      <li><code>test_template_resolver.py</code> — Unit tests</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Troubleshooting</h2>
+    <p>If you see <code>bash: sed: command not found</code> or <code>bash: cygpath: command not found</code> when running scripts on Windows, run the Python scripts from PowerShell or install Git Bash / WSL to get UNIX utilities.</p>
+  </section>
+
+  <footer>
+    <p>For detailed deployment steps, see <code>PRODUCTION_READY.md</code> and <code>PRE_PUSH_CHECKLIST.md</code>.</p>
+  </footer>
+</body>
+</html>

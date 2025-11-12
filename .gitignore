@@ -1,13 +1,33 @@
 .env
 
+# Virtual Environment
 .venv/
+venv/
+ENV/
 
-.venv
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
 instance/
 
+# Database
 migrations/
 *.sqlite3
 
+# IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+
+# Firebase Credentials
+*firebase*.json
+push-service-*.json
+firebase-credentials.json
+
+# Logs
+*.log
