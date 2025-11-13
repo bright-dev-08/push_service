@@ -5,6 +5,7 @@ from redis.asyncio import Redis
 import time
 
 from schemas import NotificationEvent
+from datetime import datetime
 from config import IDEMPOTENCY_KEY_PREFIX, RATE_LIMIT_PREFIX, TOKEN_METADATA_PREFIX
 from core.providers.fcm import FCMProvider
 from core.template_resolver import resolve_push_payload
@@ -27,7 +28,7 @@ def set_fcm_provider(provider: FCMProvider):
     fcm_provider = provider
 
 
-async def get_device_token(user_id: int) -> str:
+async def get_device_token(user_id: int | str) -> str:
     """
     Get the user's device token from Redis.
     In a real implementation, this would call the User Service.
@@ -35,7 +36,17 @@ async def get_device_token(user_id: int) -> str:
     # For now, we'll mock this with Redis
     token_key = f"{TOKEN_METADATA_PREFIX}user:{user_id}"
     token_data = await redis_client.hgetall(token_key)
-    return token_data.get("token")
+    # hgetall returns bytes keys/values when using redis-py asyncio client; convert if necessary
+    if not token_data:
+        return None
+    # token_data may be a dict of bytes; handle both str and bytes
+    token = token_data.get("token") or token_data.get(b"token")
+    if isinstance(token, bytes):
+        try:
+            token = token.decode()
+        except Exception:
+            token = token.decode('utf-8', errors='ignore')
+    return token
 
 
 # Circuit breaker keys and defaults (stored in Redis so multiple workers share state)
@@ -99,9 +110,22 @@ async def process_push_event(message: DeliveredMessage):
         # --- 2. Get User's Device Token ---
         device_token = await get_device_token(event.user_id)
         if not device_token:
-            print(f"❌ No device token found for user {event.user_id}")
-            await message.channel.basic_ack(message.delivery_tag)  # Don't requeue if no token
-            return
+            # Fallback: allow the producer to include a device token in the message
+            # useful for quick tests where registration isn't available.
+            device_token = body_json.get("device_token")
+            if device_token:
+                print(f"ℹ️ Using device_token from message for user {event.user_id}")
+                # Persist this mapping in Redis for future messages (best-effort)
+                try:
+                    token_key = f"{TOKEN_METADATA_PREFIX}user:{event.user_id}"
+                    # Store token and registration timestamp
+                    await redis_client.hset(token_key, mapping={"token": device_token, "registered_at": datetime.utcnow().isoformat() + "Z"})
+                except Exception as ex:
+                    print(f"⚠️ Failed to persist token in Redis: {ex}")
+            else:
+                print(f"❌ No device token found for user {event.user_id}")
+                await message.channel.basic_ack(message.delivery_tag)  # Don't requeue if no token
+                return
 
         # --- 3. Rate Limit Check (NFR) ---
         rate_key = RATE_LIMIT_PREFIX + str(event.user_id)
